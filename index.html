@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#2a1a12">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Golden Hour Golf">
+<meta name="format-detection" content="telephone=no">
+<meta name="description" content="A mobile-first 3D golf driving-range challenge: longest drive, target greens, crosswind, island greens and obstacle shots.">
+<title>Golden Hour Golf · Driving Range Challenge</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="touch"></div>
+<div id="labels"></div>
+
+<div id="loading" class="screen show"><div class="spinner"></div><p id="loading-text">Setting up the range…</p></div>
+
+<section id="title" class="screen">
+  <div class="title-wrap">
+    <div class="logo">
+      <div class="logo-sun"></div>
+      <h1>GOLDEN HOUR<span>GOLF CHALLENGE</span></h1>
+    </div>
+    <div class="rank-card"><span id="t-rank">Rookie</span><span class="dot">•</span><span id="t-stars">0</span> ★</div>
+  </div>
+  <div class="title-actions">
+    <button id="btn-play" class="btn primary big" type="button">Play</button>
+    <button id="btn-settings" class="btn ghost" type="button">Settings</button>
+    <p class="tiny">Tip: add to your home screen for full-screen play</p>
+  </div>
+</section>
+
+<section id="career" class="screen">
+  <header class="bar">
+    <button class="icon-btn" id="career-back" type="button" aria-label="Back">‹</button>
+    <h2>Career</h2>
+    <button class="icon-btn" id="career-settings" type="button" aria-label="Settings">⚙</button>
+  </header>
+  <div class="rank-strip">
+    <div><b id="c-rank">Rookie</b><small id="c-next"></small></div>
+    <div class="pill"><span id="c-stars">0</span> / <span id="c-max">0</span> ★</div>
+    <div class="progress"><i id="c-prog"></i></div>
+  </div>
+  <div id="tracks" class="scroll"></div>
+</section>
+
+<div id="hud" class="hidden">
+  <div class="hud-top">
+    <button id="btn-pause" class="icon-btn" type="button" aria-label="Pause">❚❚</button>
+    <div class="goal-box"><div id="h-title"></div><div id="h-goal"></div></div>
+    <button id="btn-mute" class="icon-btn" type="button" aria-label="Sound">🔊</button>
+  </div>
+  <div class="hud-chips">
+    <div class="chip" id="h-balls">Ball 1/5</div>
+    <div class="chip" id="h-score">Hits 0</div>
+    <div id="wind" class="chip wind"><svg viewBox="0 0 40 40" width="30" height="30"><g id="w-arrow"><path d="M20 4 L29 20 L23 18 L23 35 L17 35 L17 18 L11 20 Z" fill="currentColor"/></g></svg><div><b id="w-mph">0</b><small id="w-lbl">mph</small></div></div>
+  </div>
+  <div id="flight-info" class="hidden"><div id="fi-main">0 yd</div><div id="fi-sub"></div></div>
+  <div id="meter" class="hidden">
+    <div class="m-track"><div class="m-low"></div><div class="m-zone"><span>PERFECT</span></div><div class="m-over"></div><div class="m-fill"></div><div class="m-needle"></div></div>
+    <div class="m-pct" id="m-pct">0%</div>
+  </div>
+  <div id="pop"></div>
+  <div id="cancel-hint" class="hidden">Release to cancel</div>
+  <div class="hud-bottom" id="hud-bottom">
+    <div id="swing-hint">Press &amp; hold anywhere · slide to aim · release in the green</div>
+    <div class="aim-row">
+      <button id="aim-l" class="aim-btn" type="button" aria-label="Aim left">◀</button>
+      <div id="aim-val">Aim 0°</div>
+      <button id="aim-r" class="aim-btn" type="button" aria-label="Aim right">▶</button>
+    </div>
+    <div id="clubs"></div>
+  </div>
+</div>
+
+<div id="shot-card" class="hidden">
+  <div id="sc-tag"></div>
+  <div id="sc-big"></div>
+  <div id="sc-sub"></div>
+  <div class="sc-btns">
+    <button id="btn-replay" class="btn ghost" type="button">↺ Replay</button>
+    <button id="btn-next" class="btn primary" type="button">Next ball ▶</button>
+  </div>
+</div>
+
+<section id="intro" class="modal"><div class="panel">
+  <div class="track-tag" id="i-track"></div>
+  <h2 id="i-name"></h2>
+  <ul id="i-goals"></ul>
+  <div class="stars-req" id="i-stars"></div>
+  <div class="i-meta" id="i-meta"></div>
+  <div class="i-best" id="i-best"></div>
+  <div class="row">
+    <button class="btn ghost" id="i-back" type="button">Back</button>
+    <button class="btn primary" id="i-go" type="button">Tee off ▶</button>
+  </div>
+</div></section>
+
+<section id="results" class="modal"><div class="panel">
+  <h2 id="r-title">Level complete!</h2>
+  <div class="r-stars" id="r-stars"><span>★</span><span>★</span><span>★</span></div>
+  <div class="r-value" id="r-value"></div>
+  <div class="r-sub" id="r-sub"></div>
+  <div class="r-unlock" id="r-unlock"></div>
+  <div class="row">
+    <button class="btn ghost" id="r-map" type="button">Career</button>
+    <button class="btn ghost" id="r-retry" type="button">↺ Retry</button>
+    <button class="btn primary" id="r-next" type="button">Next ▶</button>
+  </div>
+</div></section>
+
+<section id="pause" class="modal"><div class="panel">
+  <h2>Paused</h2>
+  <button class="btn primary" id="p-resume" type="button">Resume</button>
+  <button class="btn ghost" id="p-restart" type="button">Restart level</button>
+  <button class="btn ghost" id="p-map" type="button">Career map</button>
+  <button class="btn ghost" id="p-settings" type="button">Settings</button>
+</div></section>
+
+<section id="settings" class="modal"><div class="panel">
+  <h2>Settings</h2>
+  <label class="toggle"><span>Sound</span><input type="checkbox" id="s-sound"><i></i></label>
+  <label class="toggle"><span>Vibration</span><input type="checkbox" id="s-haptics"><i></i></label>
+  <div class="setting"><span>Graphics</span>
+    <div class="seg" id="s-quality"><button data-q="auto" type="button">Auto</button><button data-q="0" type="button">Low</button><button data-q="1" type="button">Med</button><button data-q="2" type="button">High</button><button data-q="3" type="button">Ultra</button></div>
+  </div>
+  <div class="tiny" id="s-qinfo"></div>
+  <button class="btn ghost" id="s-tutorial" type="button">Show tutorial again</button>
+  <button class="btn danger" id="s-reset" type="button">Reset progress</button>
+  <button class="btn primary" id="s-close" type="button">Done</button>
+</div></section>
+
+<section id="confirm" class="modal"><div class="panel">
+  <h2>Reset all progress?</h2>
+  <p>This erases every star, best score and unlock. It can’t be undone.</p>
+  <div class="row">
+    <button class="btn ghost" id="cf-no" type="button">Cancel</button>
+    <button class="btn danger" id="cf-yes" type="button">Reset</button>
+  </div>
+</div></section>
+
+<section id="tutorial" class="modal"><div class="panel">
+  <div class="tut-art" id="tut-art"></div>
+  <h2 id="tut-title"></h2>
+  <p id="tut-text"></p>
+  <div class="tut-dots" id="tut-dots"></div>
+  <div class="row"><button class="btn ghost" id="tut-skip" type="button">Skip</button><button class="btn primary" id="tut-next" type="button">Next</button></div>
+</div></section>
+
+<div id="toast"></div>
+<noscript><p style="color:#fff;padding:20px">This game needs JavaScript and WebGL.</p></noscript>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
