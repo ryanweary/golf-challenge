@@ -212,3 +212,40 @@ h1 span { display: block; font-size: .38em; letter-spacing: .32em; margin-top: 1
   .panel { max-height: 96vh; }
   #shot-card { max-width: 380px; }
 }
+
+/* ---------- spin control ---------- */
+.spin-btn { pointer-events: auto; height: 44px; min-width: 52px; padding: 0 8px 0 5px; border-radius: 14px; background: var(--glass); border: 1px solid var(--line); display: flex; align-items: center; gap: 5px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.spin-btn small { font-size: 11px; font-weight: 800; min-width: 26px; }
+.spin-btn.on { border-color: var(--gold); }
+.sb-ball { width: 30px; height: 30px; border-radius: 50%; position: relative; background: radial-gradient(circle at 35% 30%, #fff, #e6e1d6 60%, #bdb6a8); box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); }
+.sb-ball::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(0,0,0,.08) 1px, transparent 1.5px) 0 0 / 5px 5px; }
+#sb-dot { position: absolute; width: 8px; height: 8px; margin: -4px 0 0 -4px; border-radius: 50%; background: #e2382b; left: 50%; top: 50%; z-index: 1; box-shadow: 0 0 0 1.5px #fff; }
+#spin-pad { position: absolute; z-index: 8; pointer-events: auto; left: 50%; bottom: calc(var(--sab) + 120px); transform: translateX(-50%); width: min(300px, 88vw); padding: 14px 16px 16px; border-radius: 22px; background: var(--glass2); border: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); text-align: center; touch-action: none; }
+#spin-pad .sp-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+#spin-pad .sp-head small { opacity: .75; font-size: 12px; }
+.sp-face { width: 190px; height: 190px; margin: 0 auto; border-radius: 50%; position: relative; touch-action: none; background: radial-gradient(circle at 38% 32%, #fff, #ece7dc 55%, #b9b1a2); box-shadow: 0 6px 20px rgba(0,0,0,.35), inset 0 0 0 2px rgba(0,0,0,.08); }
+.sp-face::before { content: ''; position: absolute; inset: 0; border-radius: 50%; background: radial-gradient(circle, rgba(0,0,0,.07) 2px, transparent 2.6px) 0 0 / 13px 13px; }
+.sp-cross { position: absolute; inset: 0; border-radius: 50%; background: linear-gradient(rgba(0,0,0,.18), rgba(0,0,0,.18)) center / 1px 100% no-repeat, linear-gradient(90deg, rgba(0,0,0,.18), rgba(0,0,0,.18)) center / 100% 1px no-repeat; }
+.sp-l { position: absolute; font-size: 9px; font-weight: 900; letter-spacing: .08em; color: rgba(60,40,20,.7); }
+.sp-l.t { top: 10px; left: 50%; transform: translateX(-50%); } .sp-l.b { bottom: 10px; left: 50%; transform: translateX(-50%); }
+.sp-l.l { left: 8px; top: 50%; transform: translateY(-50%); } .sp-l.r { right: 10px; top: 50%; transform: translateY(-50%); }
+#sp-dot { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; left: 50%; top: 50%; border-radius: 50%; background: radial-gradient(circle at 40% 35%, #ff7a6a, #d42a1e); box-shadow: 0 0 0 3px #fff, 0 3px 8px rgba(0,0,0,.4); transition: left .12s, top .12s; }
+.sp-desc { margin: 10px 0 10px; font-weight: 800; font-size: 14px; min-height: 36px; }
+.sp-desc small { display: block; font-weight: 600; opacity: .75; font-size: 12px; }
+#spin-pad .row { display: flex; gap: 10px; } #spin-pad .row .btn { flex: 1; min-height: 44px; }
+
+/* ---------- minimap ---------- */
+#minimap { position: absolute; pointer-events: auto; left: calc(var(--sal) + 10px); top: calc(var(--sat) + 116px); width: 120px; height: 120px; border-radius: 14px; overflow: hidden; border: 1.5px solid rgba(255, 240, 210, .45); box-shadow: 0 4px 16px rgba(0,0,0,.35); background: rgba(20,12,8,.5); transition: width .2s, height .2s; touch-action: manipulation; cursor: pointer; }
+#minimap.big { width: 200px; height: 200px; }
+#minimap canvas { width: 100%; height: 100%; display: block; }
+#hud.hidden #minimap { display: none; }
+.lbl.zone { white-space: pre; text-align: center; line-height: 1.25; }
+@media (orientation: portrait) { #flight-info { left: 130px; right: 64px; } }
+@media (orientation: landscape) and (max-height: 500px) {
+  #minimap { top: calc(var(--sat) + 64px); width: 96px; height: 96px; }
+  #minimap.big { width: 160px; height: 160px; }
+  #spin-pad { bottom: auto; top: 50%; transform: translate(-50%, -50%); width: 360px; display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; align-items: center; padding: 12px; }
+  #spin-pad.hidden { display: none; }
+  #spin-pad .sp-head { grid-column: 1 / 3; margin: 0; }
+  .sp-face { width: 150px; height: 150px; grid-row: 2 / 4; }
+}

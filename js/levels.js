@@ -109,7 +109,7 @@ export const Store = {
     try { this.data = JSON.parse(localStorage.getItem(KEY)) || null; } catch { this.data = null; }
     if (!this.data || typeof this.data !== 'object') this.data = {};
     this.data.levels ||= {};
-    this.data.settings = { sound: true, haptics: true, quality: 'auto', ...(this.data.settings || {}) };
+    this.data.settings = { sound: true, music: true, sfx: true, haptics: true, quality: 'auto', ...(this.data.settings || {}) };
     this.data.tutorialDone ||= false;
     return this.data;
   },

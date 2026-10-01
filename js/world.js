@@ -393,8 +393,10 @@ export class World {
       uniforms: { uTime: this.uniforms.uTime, uCharge: { value: 0 } },
       vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
       fragmentShader: `uniform float uTime; uniform float uCharge; varying vec2 vUv; void main(){
-        float e = 1.0 - abs(vUv.y * 2.0 - 1.0); float pulse = 0.65 + 0.35 * sin(uTime * 5.0);
-        vec3 c = mix(vec3(1.0), vec3(1.0, 0.82, 0.3), uCharge); gl_FragColor = vec4(c, e * pulse); }`,
+        float e = 1.0 - abs(vUv.y * 2.0 - 1.0); float pulse = 0.8 + 0.2 * sin(uTime * 5.0);
+        vec3 c = mix(vec3(1.0), vec3(1.0, 0.82, 0.3), uCharge);
+        vec3 col = mix(vec3(0.08, 0.05, 0.02), c, smoothstep(0.3, 0.6, e));
+        gl_FragColor = vec4(col, smoothstep(0.0, 0.2, e) * mix(0.75, 1.0, smoothstep(0.3, 0.6, e)) * pulse); }`,
     });
     this.zone = new THREE.Mesh(zg, this.zoneMat); this.zone.frustumCulled = false; this.zone.renderOrder = 3; this.scene.add(this.zone);
     this.zoneDot = new THREE.Mesh(new THREE.CircleGeometry(0.6, 20).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.8, depthWrite: false, fog: false }));
@@ -409,10 +411,63 @@ export class World {
     });
     this.beacon = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1, 12, 1, true).translate(0, 0.5, 0), this.beaconMat);
     this.beacon.frustumCulled = false; this.beacon.renderOrder = 4; this.scene.add(this.beacon);
+    // predicted flight arc: dotted points (bright for flight, faint for roll)
+    const PN = this.arcN = 140, ag = new THREE.BufferGeometry();
+    this.arcPos = new Float32Array(PN * 3); this.arcA = new Float32Array(PN);
+    ag.setAttribute('position', new THREE.BufferAttribute(this.arcPos, 3).setUsage(THREE.DynamicDrawUsage));
+    ag.setAttribute('aA', new THREE.BufferAttribute(this.arcA, 1).setUsage(THREE.DynamicDrawUsage));
+    ag.setDrawRange(0, 0);
+    this.arcMat = new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, fog: false,
+      uniforms: { uDpr: { value: 1 }, uCharge: { value: 0 } },
+      vertexShader: `attribute float aA; varying float vA; uniform float uDpr; void main(){ vA = aA; vec4 mv = modelViewMatrix * vec4(position,1.0);
+        gl_PointSize = clamp(420.0 / -mv.z, 3.5, 9.0) * uDpr * (aA > 0.5 ? 1.0 : 0.8); gl_Position = projectionMatrix * mv; }`,
+      fragmentShader: `varying float vA; uniform float uCharge; void main(){ float r = length(gl_PointCoord - 0.5) * 2.0; if (r > 1.0) discard;
+        vec3 c = mix(vec3(1.0, 0.98, 0.9), vec3(1.0, 0.86, 0.4), uCharge);
+        vec3 col = mix(c, vec3(0.1, 0.06, 0.02), smoothstep(0.5, 0.75, r)); gl_FragColor = vec4(col, vA * (1.0 - smoothstep(0.85, 1.0, r))); }`,
+    });
+    this.arc = new THREE.Points(ag, this.arcMat); this.arc.frustumCulled = false; this.arc.renderOrder = 6; this.scene.add(this.arc);
+    // predicted stop-after-roll marker (fainter)
+    const rr = new THREE.RingGeometry(0.62, 1, 40).rotateX(-Math.PI / 2);
+    this.restMark = new THREE.Mesh(rr, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55, depthWrite: false, fog: false }));
+    this.restMark.renderOrder = 3; this.scene.add(this.restMark);
+    this.restDot = new THREE.Mesh(new THREE.CircleGeometry(0.28, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0x1a0f08, transparent: true, opacity: 0.6, depthWrite: false, fog: false }));
+    this.restDot.renderOrder = 3; this.scene.add(this.restDot);
+    this.restMark.visible = this.restDot.visible = this.arc.visible = false;
+  }
+  /** Live landing prediction. res = simulateShot result, start = ball pos, opts { charge, arcFrac, showRest } */
+  setPrediction(res, start, opts = {}) {
+    const vis = !!res;
+    this.arc.visible = vis; this.restMark.visible = this.restDot.visible = vis && opts.showRest !== false;
+    if (!vis) { this.setAimPreview(start, 0, 10, 0, false); return; }
+    const L = res.land, dx = L.x - start.x, dz = L.z - start.z, carry = Math.hypot(dx, dz);
+    this.setAimPreview(start, Math.atan2(dx, -dz), carry, opts.charge || 0, true, true);
+    // arc points by arc length
+    const s = res.samples, n = s.length / 4, P = this.arcPos, A = this.arcA, maxN = this.arcN;
+    let landI = n - 1; for (let i = 0; i < n; i++) if (s[i * 4] >= res.landT) { landI = i; break; }
+    const flightEnd = Math.max(1, Math.floor(landI * (opts.arcFrac ?? 1)));
+    let len = 0; for (let i = 1; i <= flightEnd; i++) len += Math.hypot(s[i * 4 + 1] - s[i * 4 - 3], s[i * 4 + 2] - s[i * 4 - 2], s[i * 4 + 3] - s[i * 4 - 1]);
+    const stepL = Math.max(1.2, len / 70);
+    let k = 0, acc = stepL * 0.6;
+    const put = (i, a) => { if (k >= maxN) return; P[k * 3] = s[i * 4 + 1]; P[k * 3 + 1] = s[i * 4 + 2] + 0.05; P[k * 3 + 2] = s[i * 4 + 3]; A[k] = a; k++; };
+    for (let i = 1; i <= flightEnd; i++) {
+      acc += Math.hypot(s[i * 4 + 1] - s[i * 4 - 3], s[i * 4 + 2] - s[i * 4 - 2], s[i * 4 + 3] - s[i * 4 - 1]);
+      if (acc >= stepL) { acc = 0; put(i, 0.9); }
+    }
+    if (opts.showRest !== false) { // faint roll dots
+      acc = 0; const rs = 2.2;
+      for (let i = landI + 1; i < n; i++) { acc += Math.hypot(s[i * 4 + 1] - s[i * 4 - 3], s[i * 4 + 3] - s[i * 4 - 1]); if (acc >= rs) { acc = 0; put(i, 0.38); } }
+    }
+    this.arc.geometry.setDrawRange(0, k); this.arc.geometry.attributes.position.needsUpdate = true; this.arc.geometry.attributes.aA.needsUpdate = true;
+    this.arcMat.uniforms.uDpr.value = this.renderer.getPixelRatio(); this.arcMat.uniforms.uCharge.value = opts.charge || 0;
+    const R = res.rest, C = this.course, ry = Math.max(C.heightAt(R.x, R.z), WATER_Y) + 0.1, rsz = 0.9 + Math.hypot(R.x - start.x, R.z - start.z) * 0.006;
+    this.restMark.position.set(R.x, ry, R.z); this.restMark.scale.setScalar(rsz);
+    this.restDot.position.set(R.x, ry + 0.01, R.z); this.restDot.scale.setScalar(rsz);
   }
   /** start {x,z}, aim rad, carry m, charge 0..1 */
-  setAimPreview(start, aim, carry, charge, visible = true) {
+  setAimPreview(start, aim, carry, charge, visible = true, precise = false) {
     this.aimLine.visible = this.zone.visible = this.zoneDot.visible = this.beacon.visible = visible;
+    if (!visible && this.arc) this.arc.visible = this.restMark.visible = this.restDot.visible = false;
     if (!visible || !this.course) return;
     const C = this.course, N = this.aimN, fx = Math.sin(aim), fz = -Math.cos(aim), rx = Math.cos(aim), rz = Math.sin(aim);
     const len = Math.max(8, carry - 4), p = this.aimLine.geometry.attributes.position, uv = this.aimLine.geometry.attributes.uv;
@@ -426,18 +481,19 @@ export class World {
     }
     p.needsUpdate = true; uv.needsUpdate = true; this.aimMat.uniforms.uLen.value = len; this.aimMat.uniforms.uCharge.value = charge;
     const cx = start.x + fx * carry, cz = start.z + fz * carry, M = this.zoneN, zp = this.zone.geometry.attributes.position;
-    const ra = 3.2 + carry * 0.03, rb = 5 + carry * 0.05, th = 0.6 + carry * 0.009;
+    const ra = precise ? 2.0 + carry * 0.022 : 3.2 + carry * 0.03, rb = precise ? 2.6 + carry * 0.036 : 5 + carry * 0.05, th = precise ? 0.7 + carry * 0.012 : 0.6 + carry * 0.009;
+    const gy = (x, z) => Math.max(C.heightAt(x, z), WATER_Y);
     for (let i = 0; i <= M; i++) {
       const a = i / M * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
       for (let s = 0; s < 2; s++) {
         const k = s ? 1 : 1 - th / ra;
         const lx = ca * ra * k, lz = sa * rb * (s ? 1 : 1 - th / rb);
         const x = cx + rx * lx + fx * lz, z = cz + rz * lx + fz * lz;
-        zp.setXYZ(i * 2 + s, x, C.heightAt(x, z) + 0.12, z);
+        zp.setXYZ(i * 2 + s, x, gy(x, z) + 0.12, z);
       }
     }
     zp.needsUpdate = true; this.zoneMat.uniforms.uCharge.value = charge;
-    this.zoneDot.position.set(cx, C.heightAt(cx, cz) + 0.1, cz);
+    this.zoneDot.position.set(cx, gy(cx, cz) + 0.1, cz); this.zoneDot.scale.setScalar(precise ? 0.5 + carry * 0.003 : 1);
     this.beacon.position.copy(this.zoneDot.position); const bw = 0.25 + carry * 0.006; this.beacon.scale.set(bw, 6 + carry * 0.04, bw);
     this.beaconMat.uniforms.uCharge.value = charge; this.zoneCenter = this.zoneDot.position;
   }

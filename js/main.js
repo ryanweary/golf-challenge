@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { World, QUALITY } from './world.js';
 import { Course, makeLayout, YD, SURF, WATER_Y } from './terrain.js';
-import { CLUBS, simulateShot, sampleAt, strikeFromMeter, launchFor, makeWind, BALL_R } from './physics.js';
+import { CLUBS, simulateShot, sampleAt, strikeFromMeter, launchFor, makeWind, BALL_R, spinEffect } from './physics.js';
+import { Minimap } from './minimap.js';
 import { LEVELS, TRACKS, Store, trackUnlock, levelUnlock, nextLevel, starsFor, trackLevels, totalBalls, rankFor, RANKS, MAX_STARS, levelById } from './levels.js';
 import { windFor, targetFor, judge, goalText } from './rules.js';
 import { Sfx } from './audio.js';
@@ -14,7 +15,7 @@ const MODE_NAME = { drive: 'Longest Drive', target: 'Target Greens', wind: 'Cros
 
 Store.load();
 const settings = Store.data.settings;
-const sfx = new Sfx(); sfx.muted = !settings.sound;
+const sfx = new Sfx(); sfx.muted = !settings.sound; sfx.sfxOn = settings.sfx !== false; sfx.musicOn = settings.music !== false;
 
 let world;
 try { world = new World($('c')); } catch (e) {
@@ -26,9 +27,9 @@ const G = {
   state: 'boot', lv: null, stageIdx: 0, ballInStage: 0, ballNo: 0, hits: 0, best: 0, shots: [],
   stage: null, course: null, wind: { s: 0, dir: 0, gust: 0 }, windFn: null, clubIdx: 0,
   aim: 0, aimGoal: 0, m: 0, holdStart: 0, zone: { lo: 0.82, hi: 0.98 }, period: 2.3, inZone: false,
-  shot: null, carryTables: null, speed: 1, rng: mulberry32(Date.now() & 0xffff), q: 3, quality: settings.quality,
+  shot: null, carryTables: null, speed: 1, spin: { v: 0, h: 0 }, rng: mulberry32(Date.now() & 0xffff), q: 3, quality: settings.quality,
 };
-window.__golf = { G, Store, LEVELS, world, startLevel: id => startLevel(levelById(id)) };
+window.__golf = { G, Store, LEVELS, world, sfx, startLevel: id => startLevel(levelById(id)) };
 
 // ------------------------------------------------------------ quality
 function initialQuality() {
@@ -132,6 +133,79 @@ function carryFor(ci, power) {
   for (let i = 1; i < t.length; i++) if (power <= t[i][0]) { const f = (power - t[i - 1][0]) / (t[i][0] - t[i - 1][0]); return lerp(t[i - 1][1], t[i][1], f); }
   return t[t.length - 1][1];
 }
+// ------------------------------------------------------------ landing prediction (same integrator as the real shot)
+const pred = { key: '', res: null, t: 0, power: 1 };
+function predictFor(power) {
+  const cl = CLUBS[G.clubIdx], l = launchFor(cl, { power, quality: 2 }, G.spin);
+  return simulateShot(G.course, { x: G.ballPos.x, y: G.ballPos.y, z: G.ballPos.z, ...l, aim: G.aimGoal, face: 0, tilt: l.tiltAdd, wind: G.windFn, seed: 7 });
+}
+function updatePrediction(now, power, force) {
+  const key = `${G.clubIdx}|${power.toFixed(3)}|${G.aimGoal.toFixed(4)}|${G.spin.v}|${G.spin.h}|${G.ballNo}|${G.stageIdx}|${G.ballInStage}`;
+  if (key === pred.key) return false;
+  if (!force && pred.res && now - pred.t < 45) return false;
+  pred.key = key; pred.t = now; pred.res = predictFor(power); pred.power = power;
+  return true;
+}
+// later levels show less help: carry ring + a shorter arc, no roll-out marker
+function assist() { const sd = G.lv ? G.lv.sd : 0; return sd >= 0.5 ? { arcFrac: 0.6, showRest: false } : { arcFrac: 1, showRest: true }; }
+window.__golf.pred = pred; window.__golf.predictFor = p => predictFor(p);
+
+const mini = new Minimap($('minimap'));
+function fitMinimap() {
+  if (!G.course || !G.stage) return;
+  const st = G.stage, tg = stageTargets();
+  let far = st.mode === 'drive' ? 250 : st.mode === 'wind' ? (st.D || 180) * YD + 40 : 60, cx = 0;
+  if (tg.length) { far = Math.max(far, ...tg.map(g => Math.hypot(g.pinX, g.pinZ) + 25)); cx = tg.reduce((a, g) => a + g.pinX, 0) / tg.length * 0.6; }
+  if (pred.res) far = Math.max(far, Math.hypot(pred.res.rest.x, pred.res.rest.z) + 15);
+  mini.setCourse(G.course, tg, st.mode === 'target' || st.mode === 'obstacle' ? st.R : 0, far, cx);
+}
+function drawMinimap(now, force) {
+  if (!G.course || !mini.fit) return;
+  const S = G.shot, fl = G.state === 'flight' || G.state === 'replay' || G.state === 'rest';
+  const tgt = targetFor(G.stage, G.course, G.ballInStage), tg = stageTargets();
+  mini.draw({ now, ball: G.ballPos, pred: fl ? (S && S.predShown) : pred.res, showRest: assist().showRest, live: fl && S ? S.pos : null, trail: fl && S ? S.pts : null,
+    tgtIdx: tgt ? tg.indexOf(tgt.g) : -1, windDir: G.wind.dir, windMph: G.wind.s }, force);
+}
+
+// ------------------------------------------------------------ spin control
+const SPIN_STEPS = 2; // detents per side
+function spinCode(sp) { const v = Math.round(Math.abs(sp.v) * SPIN_STEPS), h = sp.h; let t = sp.v > 0 ? 'B' + v : sp.v < 0 ? 'T' + v : ''; if (h) t += (t ? '·' : '') + (h < 0 ? 'D' : 'F'); return t || 'Spin'; }
+function renderSpin() {
+  const sp = G.spin, cl = CLUBS[G.clubIdx], se = spinEffect(cl, sp);
+  const pos = (el, k) => { el.style.left = (50 + sp.h * k) + '%'; el.style.top = (50 + sp.v * k) + '%'; };
+  pos($('sp-dot'), 36); pos($('sb-dot'), 30);
+  $('sb-lbl').textContent = spinCode(sp); $('btn-spin').classList.toggle('on', !!(sp.v || sp.h));
+  $('sp-club').textContent = `${cl.name}: ${Math.round(se.cap * 100)}% spin control`;
+  const lvl = Math.round(Math.abs(sp.v) * SPIN_STEPS);
+  let main = sp.v > 0 ? `Backspin ${'●'.repeat(lvl)}` : sp.v < 0 ? `Topspin ${'●'.repeat(lvl)}` : 'No extra spin';
+  if (sp.h) main += sp.h < 0 ? ' · Draw (curves left)' : ' · Fade (curves right)';
+  const sub = sp.v > 0 ? 'Higher flight. Checks up (or spins back) on green & fairway, less in rough, none in sand.' : sp.v < 0 ? 'Lower, flatter flight with more bounce and roll.' : 'Tap or drag the red dot. Up = topspin, down = backspin.';
+  $('sp-desc').innerHTML = `${main}<small>${sub}</small>`;
+}
+function setSpinFromPoint(e) {
+  const r = $('sp-face').getBoundingClientRect(), R = r.width / 2;
+  let x = (e.clientX - r.left - R) / (R * 0.72), y = (e.clientY - r.top - R) / (R * 0.72);
+  const d = Math.hypot(x, y); if (d > 1) { x /= d; y /= d; }
+  const snap = q => Math.round(q * SPIN_STEPS) / SPIN_STEPS;
+  const v = snap(y), h = Math.abs(x) > 0.5 ? Math.sign(x) * (Math.abs(x) > 0.85 ? 1 : 0.5) : 0;
+  if (v !== G.spin.v || h !== G.spin.h) { G.spin = { v, h }; sfx.click(); vibrate(6); renderSpin(); }
+}
+function openSpin() { if (G.state !== 'aim') return; renderSpin(); $('spin-pad').classList.remove('hidden'); }
+function closeSpin() { $('spin-pad').classList.add('hidden'); }
+const spinOpen = () => !$('spin-pad').classList.contains('hidden');
+$('btn-spin').addEventListener('click', e => { e.stopPropagation(); sfx.unlock(); sfx.click(); spinOpen() ? closeSpin() : openSpin(); });
+{
+  const face = $('sp-face'); let dragging = null;
+  face.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); dragging = e.pointerId; try { face.setPointerCapture(e.pointerId); } catch { /* */ } setSpinFromPoint(e); });
+  face.addEventListener('pointermove', e => { if (e.pointerId === dragging) setSpinFromPoint(e); });
+  const end = e => { if (e.pointerId === dragging) dragging = null; };
+  face.addEventListener('pointerup', end); face.addEventListener('pointercancel', end);
+  $('spin-pad').addEventListener('pointerdown', e => e.stopPropagation());
+  $('sp-reset').addEventListener('click', () => { G.spin = { v: 0, h: 0 }; sfx.click(); renderSpin(); });
+  $('sp-done').addEventListener('click', () => { sfx.click(); closeSpin(); });
+}
+window.__golf.setSpin = (v, h = 0) => { G.spin = { v, h }; renderSpin(); };
+
 function setZoneFromSd(sd) {
   const w = 0.17 - 0.09 * sd; G.zone = { lo: 0.98 - w, hi: 0.98 }; G.period = 2.35 - 0.7 * sd;
   const track = document.querySelector('.m-track');
@@ -178,6 +252,7 @@ function prepareBall() {
   placeBallAtTee();
   setState('aim');
   updateHud();
+  pred.key = ''; updatePrediction(performance.now(), 1, true); fitMinimap(); renderSpin();
 }
 function placeBallAtTee() {
   const cl = CLUBS[G.clubIdx], h = G.course.heightAt(0, 0);
@@ -192,7 +267,7 @@ function buildClubChips() {
   CLUBS.forEach((cl, i) => {
     const b = document.createElement('button'); b.type = 'button'; b.className = 'club'; b.dataset.i = i;
     b.innerHTML = `<b>${cl.id}</b><small>${Math.round(yd(G.carryTables[i][6][1]))}</small>`;
-    b.addEventListener('click', () => { if (G.state !== 'aim') return; G.clubIdx = i; sfx.click(); placeBallAtTee(); updateHud(); });
+    b.addEventListener('click', () => { if (G.state !== 'aim') return; G.clubIdx = i; sfx.click(); placeBallAtTee(); updateHud(); renderSpin(); updatePrediction(performance.now(), 1, true); fitMinimap(); });
     box.appendChild(b);
   });
 }
@@ -225,6 +300,7 @@ function updateMeter() {
 
 function setState(s) {
   G.state = s;
+  if (s !== 'aim') closeSpin();
   const hud = $('hud');
   hud.classList.toggle('charging', s === 'charge');
   hud.classList.toggle('flying', s === 'flight' || s === 'replay' || s === 'rest');
@@ -245,6 +321,7 @@ touch.addEventListener('pointerdown', e => {
   if (G.state === 'flight' || G.state === 'replay') { G.speed = G.speed > 1 ? 1 : 4; return; }
   if (G.state !== 'aim') return;
   e.preventDefault();
+  if (spinOpen()) { closeSpin(); return; }
   ptr = e.pointerId; try { touch.setPointerCapture(e.pointerId); } catch { /* */ }
   G.press = { x: e.clientX, y: e.clientY, aim0: G.aimGoal };
   G.holdStart = performance.now(); G.m = 0; G.inZone = false; G.cancel = false;
@@ -283,10 +360,15 @@ nudgeButton('aim-l', -1); nudgeButton('aim-r', 1);
 function swing() {
   const cl = CLUBS[G.clubIdx];
   const strike = strikeFromMeter(G.m, G.zone, cl, G.rng);
-  const l = launchFor(cl, strike);
+  const l = launchFor(cl, strike, G.spin);
   G.aim = G.aimGoal;
-  const res = simulateShot(G.course, { x: G.ballPos.x, y: G.ballPos.y, z: G.ballPos.z, ...l, aim: G.aim, face: strike.face, tilt: strike.tilt, wind: G.windFn, seed: (G.rng() * 1e9) | 0 });
-  G.shot = { res, strike, club: cl, t: 0, ev: 0, pts: [], ptT: 0, landed: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), replay: false };
+  const predShown = pred.res, predAtRelease = predictFor(strike.power);
+  const res = simulateShot(G.course, { x: G.ballPos.x, y: G.ballPos.y, z: G.ballPos.z, ...l, aim: G.aim, face: strike.face, tilt: strike.tilt + l.tiltAdd, wind: G.windFn, seed: (G.rng() * 1e9) | 0 });
+  const log = { club: cl.id, meter: +G.m.toFixed(3), power: +strike.power.toFixed(3), label: strike.label, spin: { ...G.spin },
+    predCarry: +yd(predAtRelease.carry).toFixed(1), actualCarry: +yd(res.carry).toFixed(1), predTotal: +yd(predAtRelease.total).toFixed(1), actualTotal: +yd(res.total).toFixed(1),
+    landMiss: +yd(Math.hypot(predAtRelease.land.x - res.land.x, predAtRelease.land.z - res.land.z)).toFixed(1) };
+  (window.__golf.shotLog ||= []).push(log);
+  G.shot = { res, strike, club: cl, predShown: predShown || predAtRelease, t: 0, ev: 0, pts: [], ptT: 0, landed: false, pos: new THREE.Vector3(), prev: new THREE.Vector3(), replay: false };
   const L = res.land, lx = L.x, lz = L.z, dl = Math.hypot(lx, lz) || 1;
   const toTee = new THREE.Vector3(-lx / dl, 0, -lz / dl), side = new THREE.Vector3(-toTee.z, 0, toTee.x);
   const curve = Math.sign(res.rest.x - lx * 1) || 1;
@@ -466,7 +548,7 @@ $('i-go').addEventListener('click', () => { sfx.click(); show('intro', false); s
 
 async function startLevel(lv) {
   if (!lv) return;
-  G.lv = lv; G.hits = 0; G.best = 0; G.ballNo = 0; G.shots = [];
+  G.lv = lv; G.hits = 0; G.best = 0; G.ballNo = 0; G.shots = []; G.spin = { v: 0, h: 0 };
   screen('game');
   for (const m of ['results', 'pause', 'intro', 'settings']) show(m, false);
   await loadStage(0);
@@ -477,9 +559,9 @@ async function startLevel(lv) {
 // ------------------------------------------------------------ tutorial
 const TUT = [
   ['Press & hold', 'Press and hold anywhere on the screen to start your swing. The power meter on the right rises and falls while you hold.', ''],
-  ['Slide to aim', 'While holding, slide your thumb left or right to aim. The dotted line and ring on the ground show where the ball will land (wind not included!).', 'slide'],
+  ['Slide to aim', 'While holding, slide your thumb left or right to aim. The dotted arc and gold ring show where a clean strike will land (wind and spin included); the faint white ring is where it stops after rolling. The ring moves with the power meter, so let go when it sits on your target.', 'slide'],
   ['Release in the green', 'Let go while the meter is in the GREEN sweet spot for a perfect strike. Too early = weak shot that slices right. Too late = overswing that hooks left.', ''],
-  ['Clubs & wind', 'Pick a club below — the number is its full carry in yards. Watch the wind arrow at the top and aim into it. Tap during flight to fast-forward.', ''],
+  ['Clubs & wind', 'Pick a club below — the number is its full carry in yards. Tap the golf-ball button to add backspin (stops quicker) or topspin (rolls further). The map at top-left shows the whole hole; tap it to enlarge. Tap during flight to fast-forward.', ''],
 ];
 let tutI = 0;
 function openTutorial() { tutI = 0; renderTut(); show('tutorial', true); }
@@ -573,13 +655,15 @@ $('p-resume').addEventListener('click', () => { sfx.click(); show('pause', false
 $('p-restart').addEventListener('click', () => { sfx.click(); show('pause', false); startLevel(G.lv); });
 $('p-map').addEventListener('click', () => { sfx.click(); show('pause', false); setState('career'); openCareer(); });
 $('p-settings').addEventListener('click', () => { sfx.click(); openSettings(); });
-function syncMute() { $('btn-mute').textContent = settings.sound ? '🔊' : '🔇'; $('s-sound').checked = settings.sound; }
+function syncMute() { $('btn-mute').textContent = settings.sound ? '🔊' : '🔇'; $('s-sound').checked = settings.sound; $('s-music').checked = settings.music !== false; $('s-sfx').checked = settings.sfx !== false; }
+$('s-music').addEventListener('change', e => { sfx.unlock(); settings.music = e.target.checked; if (settings.music && !settings.sound) { settings.sound = true; sfx.setMuted(false); } sfx.setMusic(settings.music); Store.save(); syncMute(); });
+$('s-sfx').addEventListener('change', e => { sfx.unlock(); settings.sfx = e.target.checked; if (settings.sfx && !settings.sound) { settings.sound = true; sfx.setMuted(false); } sfx.setSfx(settings.sfx); Store.save(); syncMute(); sfx.click(); });
 $('btn-mute').addEventListener('click', () => { sfx.unlock(); settings.sound = !settings.sound; sfx.setMuted(!settings.sound); Store.save(); syncMute(); sfx.click(); });
 function updateQInfo() {
   document.querySelectorAll('#s-quality button').forEach(b => b.classList.toggle('on', b.dataset.q === String(settings.quality)));
   $('s-qinfo').textContent = `Rendering at ${QUALITY[G.q].name}${settings.quality === 'auto' ? ' (auto-adjusts to keep it smooth)' : ''}`;
 }
-function openSettings() { $('s-sound').checked = settings.sound; $('s-haptics').checked = settings.haptics; updateQInfo(); show('settings', true); }
+function openSettings() { syncMute(); $('s-haptics').checked = settings.haptics; updateQInfo(); show('settings', true); }
 $('s-sound').addEventListener('change', e => { sfx.unlock(); settings.sound = e.target.checked; sfx.setMuted(!settings.sound); Store.save(); syncMute(); });
 $('s-haptics').addEventListener('change', e => { settings.haptics = e.target.checked; Store.save(); if (settings.haptics) vibrate(30); });
 document.querySelectorAll('#s-quality button').forEach(b => b.addEventListener('click', () => {
@@ -619,8 +703,10 @@ function frame(now) {
     if (Math.abs(G.aim - prevAim) > 1e-5 || !G._hudTick || now - G._hudTick > 250) { updateHud(); G._hudTick = now; }
     addressCam(tmpV2, tmpV); damp(camPos, tmpV2, 6, dt); damp(camLook, tmpV, 6, dt);
     const power = st === 'charge' ? strikeFromMeter(G.m, G.zone, CLUBS[G.clubIdx], () => 0.5).power : 1;
-    G.zoneCarry = carryFor(G.clubIdx, power);
-    world.setAimPreview(G.ballPos, G.aim, G.zoneCarry, st === 'charge' ? 1 : 0, true);
+    if (updatePrediction(now, power, st !== 'charge') && st === 'aim') fitMinimap();
+    const as = assist();
+    world.setPrediction(pred.res, G.ballPos, { charge: st === 'charge' ? 1 : 0, arcFrac: as.arcFrac, showRest: as.showRest });
+    G.zoneCarry = pred.res.carry; G.zoneTotal = pred.res.total;
     world.setBall(G.ballPos, 0);
   } else if (st === 'flight' || st === 'replay') {
     world.setAimPreview(G.ballPos, G.aim, 10, 0, false);
@@ -641,10 +727,12 @@ function frame(now) {
   if ((st === 'aim' || st === 'charge') && world.zoneCenter) {
     const a = Math.round(deg(G.aim));
     zoneLabel.pos.set(world.zoneCenter.x, world.zoneCenter.y, world.zoneCenter.z);
-    zoneLabel.text = `${Math.round(yd(G.zoneCarry))} yd` + (st === 'charge' ? ` · ${a === 0 ? 'straight' : Math.abs(a) + '°' + (a < 0 ? 'L' : 'R')}` : '');
+    const wet = pred.res && pred.res.water;
+    zoneLabel.text = `${Math.round(yd(G.zoneCarry))} yd carry` + (assist().showRest ? `\n${wet ? 'into WATER' : 'total ' + Math.round(yd(G.zoneTotal)) + ' yd'}` : '') + (st === 'charge' ? ` · ${a === 0 ? 'straight' : Math.abs(a) + '°' + (a < 0 ? 'L' : 'R')}` : '');
     zoneLabel.kind = st === 'charge' ? 'zone on' : 'zone'; extraL.push(zoneLabel);
   }
   syncLabels(extraL, st === 'rest' || st === 'results');
+  drawMinimap(now);
   adaptQuality(dt);
 }
 

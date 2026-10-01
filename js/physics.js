@@ -10,13 +10,13 @@ export const MPH = 0.44704;
 
 // clubs: full-swing ball speed (m/s), launch (deg), backspin (rpm), sidespin sensitivity, tee height
 export const CLUBS = [
-  { id: 'DR', name: 'Driver', speed: 73, launch: 11.5, spin: 2650, curve: 1.3, tee: 0.035 },
-  { id: '3W', name: '3 Wood', speed: 64.5, launch: 12.5, spin: 3400, curve: 1.15, tee: 0.018 },
-  { id: '5I', name: '5 Iron', speed: 57, launch: 14, spin: 5200, curve: 1.0, tee: 0.006 },
-  { id: '7I', name: '7 Iron', speed: 51.5, launch: 17.5, spin: 6800, curve: 0.9, tee: 0.004 },
-  { id: '9I', name: '9 Iron', speed: 46, launch: 22, spin: 8200, curve: 0.8, tee: 0.003 },
-  { id: 'PW', name: 'P Wedge', speed: 42, launch: 26, spin: 9000, curve: 0.72, tee: 0.003 },
-  { id: 'SW', name: 'Lob Wedge', speed: 34, launch: 34, spin: 9600, curve: 0.65, tee: 0.003 },
+  { id: 'DR', sc: 0.35, name: 'Driver', speed: 73, launch: 11.5, spin: 2650, curve: 1.3, tee: 0.035 },
+  { id: '3W', sc: 0.42, name: '3 Wood', speed: 64.5, launch: 12.5, spin: 3400, curve: 1.15, tee: 0.018 },
+  { id: '5I', sc: 0.6, name: '5 Iron', speed: 57, launch: 14, spin: 5200, curve: 1.0, tee: 0.006 },
+  { id: '7I', sc: 0.75, name: '7 Iron', speed: 51.5, launch: 17.5, spin: 6800, curve: 0.9, tee: 0.004 },
+  { id: '9I', sc: 0.88, name: '9 Iron', speed: 46, launch: 22, spin: 8200, curve: 0.8, tee: 0.003 },
+  { id: 'PW', sc: 1.0, name: 'P Wedge', speed: 42, launch: 26, spin: 9000, curve: 0.72, tee: 0.003 },
+  { id: 'SW', sc: 1.0, name: 'Lob Wedge', speed: 34, launch: 34, spin: 9600, curve: 0.65, tee: 0.003 },
 ];
 
 // bounce / roll parameters per surface
@@ -28,6 +28,11 @@ SP[SURF.GREEN] = { e: 0.27, keep: 0.66, roll: 0.12, bite: 0.75 };
 SP[SURF.ROUGH] = { e: 0.2, keep: 0.45, roll: 0.75, bite: 0.1 };
 SP[SURF.DEEP] = { e: 0.14, keep: 0.3, roll: 1.2, bite: 0.05 };
 SP[SURF.SAND] = { e: 0.05, keep: 0.12, roll: 1.8, bite: 0 };
+// how much the ball's player-applied spin grips each surface (backspin check / spin-back)
+const GRIP = [];
+GRIP[SURF.TEE] = 0.8; GRIP[SURF.FAIRWAY] = 0.8; GRIP[SURF.FRINGE] = 0.65; GRIP[SURF.GREEN] = 1;
+GRIP[SURF.ROUGH] = 0.25; GRIP[SURF.DEEP] = 0.08; GRIP[SURF.SAND] = 0; GRIP[SURF.WATER] = 0;
+const RETRO_A = 5.5; // m/s^2 of spin-back pull at full backspin on a green
 
 /** wind(t, y) -> {x, z} m/s. Makes a wind function from a level wind spec (speed mph, dir deg where 0 = blowing downrange / helping, 90 = left->right). */
 export function makeWind(speedMph, dirDeg, gustMph = 0, seed = 1) {
@@ -67,6 +72,7 @@ export function simulateShot(course, o) {
   const nrm = { x: 0, y: 1, z: 0 }, near = [];
   const hitCooldown = new Map();
   let bounces = 0, lastSurf = SURF.TEE, step = 0;
+  const sc = o.spinCtl || 0, top = Math.max(0, -sc); let retro = 0; // player spin: + backspin, - topspin
   const push = () => { samples.push(t, px, py, pz); };
   push();
   while (mode < 2 && t < 40) {
@@ -133,7 +139,12 @@ export function simulateShot(course, o) {
             let e = sp.e * clamp(1.15 - impact / 60, 0.55, 1.1);
             const rpm = omega * 60 / (2 * Math.PI);
             let keep = sp.keep - sp.bite * clamp((rpm - 2000) / 6000, 0, 1) * clamp(impact / 18, 0.2, 1.2);
-            keep = clamp(keep, bounces === 0 ? -0.12 : 0.05, 0.95);
+            if (bounces === 0 && sc !== 0) {
+              const gr = GRIP[surf] ?? 0.25;
+              if (sc > 0) { keep -= 0.42 * sc * gr; retro = sc * gr * clamp(rpm / 6500, 0.35, 1.4); }
+              else { keep += 0.2 * top * (0.4 + 0.6 * gr); e *= 1 + 0.22 * top; }
+            }
+            keep = clamp(keep, bounces === 0 ? (sc > 0 ? -0.35 : -0.12) : 0.05, 0.97);
             vx = tx * keep - e * vn * nrm.x; vy = ty * keep - e * vn * nrm.y; vz = tz * keep - e * vn * nrm.z;
             omega *= 0.45;
             if (landT < 0) { landT = t; carryX = px; carryZ = pz; if (o.carryOnly) { mode = 2; break; } }
@@ -159,10 +170,13 @@ export function simulateShot(course, o) {
       // gravity along slope
       const gx = -G * (0 - nrm.y * nrm.x), gy = -G * (1 - nrm.y * nrm.y), gz = -G * (0 - nrm.y * nrm.z);
       vx += gx * dt * 0.71; vy += gy * dt * 0.71; vz += gz * dt * 0.71; // 5/7 rolling-sphere factor
+      // backspin pulls the ball back toward the tee (check up / spin back), decaying fast
+      const gr = GRIP[surf] ?? 0.25;
+      if (retro > 0.02) { const a = retro * gr * RETRO_A * dt; vx -= fx * a; vz -= fz * a; retro *= Math.exp(-dt / 0.45); } else retro = 0;
       const v = Math.sqrt(vx * vx + vy * vy + vz * vz);
-      const dec = sp.roll * G * nrm.y * dt;
+      const dec = sp.roll * (1 - 0.32 * top) * G * nrm.y * dt;
       const slopeAcc = Math.sqrt(gx * gx + gy * gy + gz * gz) * 0.71;
-      if (v <= dec && slopeAcc < sp.roll * G * 1.2) { vx = vy = vz = 0; mode = 2; }
+      if (v <= dec && slopeAcc < sp.roll * G * 1.2 && retro * gr < 0.08) { vx = vy = vz = 0; mode = 2; }
       else if (v > 0) { const f = Math.max(0, v - dec) / v; vx *= f; vy *= f; vz *= f; }
       px += vx * dt; pz += vz * dt; py = course.heightAt(px, pz) + BALL_R;
       // cup capture
@@ -231,11 +245,19 @@ export function strikeFromMeter(m, zone, club, rnd = Math.random) {
   return { power, tilt, face, quality, label };
 }
 
-export function launchFor(club, strike) {
-  const p = strike.power;
+/** Player spin control: v = vertical (-1 topspin .. +1 backspin), h = horizontal (-1 draw .. +1 fade). */
+export function spinEffect(club, ctl) {
+  const v = clamp(ctl?.v || 0, -1, 1), h = clamp(ctl?.h || 0, -1, 1);
+  const cap = club.sc ?? 0.6;
+  return { e: v * cap, tilt: -h * 7 * (0.6 + 0.4 * club.curve), cap };
+}
+export function launchFor(club, strike, ctl) {
+  const p = strike.power, se = spinEffect(club, ctl), e = se.e;
+  const spinMul = e >= 0 ? 1 + 0.55 * e : 1 + 0.6 * e;
   return {
-    speed: club.speed * (0.25 + 0.75 * p),
-    launch: club.launch * (1 + (1 - p) * 0.12),
-    spin: club.spin * (0.55 + 0.45 * p) * (strike.quality === 0 ? 0.85 : 1),
+    speed: club.speed * (0.25 + 0.75 * p) * (1 + (e < 0 ? -e * 0.015 : -e * 0.01)),
+    launch: club.launch * (1 + (1 - p) * 0.12) + e * 1.8,
+    spin: club.spin * (0.55 + 0.45 * p) * (strike.quality === 0 ? 0.85 : 1) * spinMul,
+    spinCtl: e, tiltAdd: se.tilt,
   };
 }

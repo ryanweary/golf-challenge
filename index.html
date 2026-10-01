@@ -76,6 +76,13 @@
     <div class="m-track"><div class="m-low"></div><div class="m-zone"><span>PERFECT</span></div><div class="m-over"></div><div class="m-fill"></div><div class="m-needle"></div></div>
     <div class="m-pct" id="m-pct">0%</div>
   </div>
+  <div id="minimap" aria-label="Map (tap to resize)"><canvas></canvas></div>
+  <div id="spin-pad" class="hidden">
+    <div class="sp-head"><b>Ball spin</b><small id="sp-club"></small></div>
+    <div class="sp-face" id="sp-face"><span class="sp-l t">TOPSPIN</span><span class="sp-l b">BACKSPIN</span><span class="sp-l l">DRAW</span><span class="sp-l r">FADE</span><i class="sp-cross"></i><b id="sp-dot"></b></div>
+    <div class="sp-desc" id="sp-desc">No spin</div>
+    <div class="row"><button class="btn ghost" id="sp-reset" type="button">Reset</button><button class="btn primary" id="sp-done" type="button">Done</button></div>
+  </div>
   <div id="pop"></div>
   <div id="cancel-hint" class="hidden">Release to cancel</div>
   <div class="hud-bottom" id="hud-bottom">
@@ -84,6 +91,7 @@
       <button id="aim-l" class="aim-btn" type="button" aria-label="Aim left">◀</button>
       <div id="aim-val">Aim 0°</div>
       <button id="aim-r" class="aim-btn" type="button" aria-label="Aim right">▶</button>
+      <button id="btn-spin" class="spin-btn" type="button" aria-label="Spin"><span class="sb-ball"><i id="sb-dot"></i></span><small id="sb-lbl">Spin</small></button>
     </div>
     <div id="clubs"></div>
   </div>
@@ -135,7 +143,9 @@
 
 <section id="settings" class="modal"><div class="panel">
   <h2>Settings</h2>
-  <label class="toggle"><span>Sound</span><input type="checkbox" id="s-sound"><i></i></label>
+  <label class="toggle"><span>Sound (master)</span><input type="checkbox" id="s-sound"><i></i></label>
+  <label class="toggle"><span>Music</span><input type="checkbox" id="s-music"><i></i></label>
+  <label class="toggle"><span>Sound effects</span><input type="checkbox" id="s-sfx"><i></i></label>
   <label class="toggle"><span>Vibration</span><input type="checkbox" id="s-haptics"><i></i></label>
   <div class="setting"><span>Graphics</span>
     <div class="seg" id="s-quality"><button data-q="auto" type="button">Auto</button><button data-q="0" type="button">Low</button><button data-q="1" type="button">Med</button><button data-q="2" type="button">High</button><button data-q="3" type="button">Ultra</button></div>

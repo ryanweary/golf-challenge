@@ -1,11 +1,13 @@
 // Tiny WebAudio synth: everything is generated, no audio files. Starts on first user gesture.
 export class Sfx {
-  constructor() { this.ctx = null; this.muted = false; this.windLevel = 0; }
+  constructor() { this.ctx = null; this.muted = false; this.sfxOn = true; this.musicOn = true; this.windLevel = 0; this.music = null; }
   unlock() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume(); return; }
     const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
     const c = this.ctx = new AC();
-    this.master = c.createGain(); this.master.gain.value = this.muted ? 0 : 0.9; this.master.connect(c.destination);
+    // out (global mute) <- master (sound effects bus) + musicBus
+    this.out = c.createGain(); this.out.gain.value = this.muted ? 0 : 1; this.out.connect(c.destination);
+    this.master = c.createGain(); this.master.gain.value = this.sfxOn ? 0.9 : 0; this.master.connect(this.out);
     const len = c.sampleRate * 2, buf = c.createBuffer(1, len, c.sampleRate), d = buf.getChannelData(0);
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
     this.noise = buf;
@@ -16,10 +18,15 @@ export class Sfx {
     src.connect(lp).connect(this.windGain).connect(this.master); src.start();
     this.windLp = lp;
     this.birdTimer = setTimeout(() => this.birdLoop(), 2500);
+    this.music = new Music(c, this.out, buf);
+    if (this.musicOn && !this.muted) this.music.start();
   }
-  setMuted(m) { this.muted = m; if (this.master) this.master.gain.setTargetAtTime(m ? 0 : 0.9, this.ctx.currentTime, 0.05); }
+  setMuted(m) { this.muted = m; if (this.out) this.out.gain.setTargetAtTime(m ? 0 : 1, this.ctx.currentTime, 0.05); this.syncMusic(); }
+  setSfx(on) { this.sfxOn = on; if (this.master) this.master.gain.setTargetAtTime(on ? 0.9 : 0, this.ctx.currentTime, 0.05); }
+  setMusic(on) { this.musicOn = on; this.syncMusic(); }
+  syncMusic() { if (!this.music) return; if (this.musicOn && !this.muted) this.music.start(); else this.music.stop(); }
   setWind(mph) { this.windLevel = mph; if (this.windGain) { this.windGain.gain.setTargetAtTime(0.015 + Math.min(mph, 30) * 0.004, this.ctx.currentTime, 0.5); this.windLp.frequency.setTargetAtTime(300 + mph * 25, this.ctx.currentTime, 0.5); } }
-  get ok() { return this.ctx && !this.muted; }
+  get ok() { return this.ctx && !this.muted && this.sfxOn; }
   t() { return this.ctx.currentTime; }
   env(g, t0, a, peak, dcy) { g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(peak, t0 + a); g.gain.exponentialRampToValueAtTime(0.0001, t0 + a + dcy); }
   noiseBurst({ type = 'bandpass', f0 = 1000, f1 = f0, q = 1, dur = 0.2, gain = 0.3, attack = 0.005, delay = 0 }) {
@@ -74,5 +81,80 @@ export class Sfx {
       for (let i = 0; i < n; i++) this.tone({ f0: base * (1 + Math.random() * 0.1), f1: base * (1.3 + Math.random() * 0.3), dur: 0.07, gain: 0.025, delay: i * 0.12 });
     }
     this.birdTimer = setTimeout(() => this.birdLoop(), 2500 + Math.random() * 6000);
+  }
+}
+
+// ------------------------------------------------------------------ ambient music
+// Generative, endlessly evolving pad music: slow chord changes with long crossfades (so it loops seamlessly),
+// soft pentatonic "glass" notes through a feedback delay, and a faint airy noise layer. Very quiet by design.
+const CHORDS = [ // MIDI notes; D major / B minor colours
+  [50, 57, 62, 66, 69, 76], // Dmaj9-ish (D A D F# A E)
+  [47, 54, 59, 62, 66, 73], // Bm9
+  [43, 50, 55, 59, 62, 69], // Gmaj9
+  [45, 52, 57, 61, 64, 71], // A6/9
+  [42, 49, 54, 57, 61, 69], // F#m7
+  [43, 50, 57, 59, 62, 66], // Gmaj7add9
+];
+const PENTA = [62, 64, 66, 69, 71, 74, 76, 78, 81, 83];
+const mtof = m => 440 * Math.pow(2, (m - 69) / 12);
+class Music {
+  constructor(ctx, dest, noise) {
+    this.c = ctx; this.noise = noise; this.on = false; this.ci = 0; this.next = 0; this.nextNote = 0; this.timer = 0;
+    const c = ctx;
+    this.bus = c.createGain(); this.bus.gain.value = 0; this.bus.connect(dest);
+    this.level = 0.16;
+    // gentle echo for space
+    this.dly = c.createDelay(2); this.dly.delayTime.value = 0.62;
+    this.fb = c.createGain(); this.fb.gain.value = 0.42;
+    const dlp = c.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 2200;
+    this.dly.connect(dlp).connect(this.fb).connect(this.dly); dlp.connect(this.bus);
+    this.padLp = c.createBiquadFilter(); this.padLp.type = 'lowpass'; this.padLp.frequency.value = 900; this.padLp.Q.value = 0.4;
+    this.padLp.connect(this.bus);
+    // slow filter breathing
+    this.lfo = c.createOscillator(); this.lfo.frequency.value = 0.045;
+    const lg = c.createGain(); lg.gain.value = 380; this.lfo.connect(lg).connect(this.padLp.frequency); this.lfo.start();
+    // airy bed
+    const n = c.createBufferSource(); n.buffer = noise; n.loop = true; n.playbackRate.value = 0.5;
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1400; bp.Q.value = 0.7;
+    const ng = c.createGain(); ng.gain.value = 0.012; n.connect(bp).connect(ng).connect(this.bus); n.start();
+  }
+  start() {
+    if (this.on) return; this.on = true;
+    const t = this.c.currentTime;
+    this.bus.gain.cancelScheduledValues(t); this.bus.gain.setValueAtTime(this.bus.gain.value, t); this.bus.gain.linearRampToValueAtTime(this.level, t + 4);
+    if (this.next < t) this.next = t + 0.1; if (this.nextNote < t) this.nextNote = t + 3;
+    this.tick(); this.timer = setInterval(() => this.tick(), 400);
+  }
+  stop() {
+    if (!this.on) return; this.on = false; clearInterval(this.timer);
+    const t = this.c.currentTime; this.bus.gain.cancelScheduledValues(t); this.bus.gain.setValueAtTime(this.bus.gain.value, t); this.bus.gain.linearRampToValueAtTime(0, t + 1.2);
+  }
+  tick() {
+    const t = this.c.currentTime, ahead = t + 1.5;
+    while (this.next < ahead) { this.chord(CHORDS[this.ci % CHORDS.length], this.next, 11); this.ci++; this.next += 8; }
+    while (this.nextNote < ahead) { this.bell(this.nextNote); this.nextNote += 1.6 + Math.random() * 3.2; }
+  }
+  chord(notes, t0, dur) {
+    const c = this.c;
+    for (const m of notes) {
+      const g = c.createGain(), peak = (m < 52 ? 0.05 : 0.032);
+      g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(peak, t0 + 3.5); g.gain.setValueAtTime(peak, t0 + dur - 4.5); g.gain.linearRampToValueAtTime(0.0001, t0 + dur);
+      g.connect(this.padLp);
+      for (const det of [-6, 6]) {
+        const o = c.createOscillator(); o.type = m < 52 ? 'sine' : 'triangle'; o.frequency.value = mtof(m); o.detune.value = det + (Math.random() - 0.5) * 4;
+        o.connect(g); o.start(t0); o.stop(t0 + dur + 0.1);
+      }
+    }
+  }
+  bell(t0) {
+    const c = this.c, chord = CHORDS[(this.ci + CHORDS.length - 1) % CHORDS.length];
+    const pool = PENTA.filter(p => chord.some(n => (n - p) % 12 === 0) || Math.random() < 0.35);
+    const m = pool[(Math.random() * pool.length) | 0] || 74;
+    const o = c.createOscillator(); o.type = 'sine'; o.frequency.value = mtof(m);
+    const o2 = c.createOscillator(); o2.type = 'sine'; o2.frequency.value = mtof(m) * 2.005;
+    const g = c.createGain(), g2 = c.createGain(); g2.gain.value = 0.25;
+    g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(0.045, t0 + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 3.2);
+    o.connect(g); o2.connect(g2).connect(g); g.connect(this.bus); g.connect(this.dly);
+    o.start(t0); o2.start(t0); o.stop(t0 + 3.3); o2.stop(t0 + 3.3);
   }
 }
